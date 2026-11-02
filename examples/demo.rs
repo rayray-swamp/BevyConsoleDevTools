@@ -17,16 +17,10 @@ fn main() {
         }),
         ..default()
     }))
+    .add_plugins(bevy_console_devtools::ConsoleDevToolsPlugin)
+    .register_type::<Square>()
     .add_systems(Startup, setup)
     .add_systems(Update, drag_square);
-
-    // SPIKE (removed in Task 4): inject a drag directly via input::*
-    if std::env::var("BCDT_SPIKE").is_ok() {
-        app.add_systems(First, spike_drag);
-        if std::env::var("BCDT_NO_RESTORE").is_err() {
-            app.add_systems(PostUpdate, bevy_console_devtools::input::restore_real_cursor);
-        }
-    }
     app.run();
 }
 
@@ -64,29 +58,4 @@ fn drag_square(
         *grabbing = false;
     }
     sq.pos = tf.translation.truncate();
-    if std::env::var("BCDT_DEBUG").is_ok() {
-        eprintln!("DBG cursor={:?} pressed={} grabbing={} pos={:?}", window.cursor_position(), buttons.pressed(MouseButton::Left), *grabbing, sq.pos);
-    }
-}
-
-fn spike_drag(world: &mut World, mut f: Local<u32>) {
-    use bevy_console_devtools::{command::Button, input};
-    *f += 1;
-    match *f {
-        30 => {
-            input::set_cursor(world, Vec2::new(400.0, 300.0));
-            input::button(world, Button::Left, true);
-        }
-        31..=90 => input::set_cursor(
-            world,
-            Vec2::new(400.0, 300.0).lerp(Vec2::new(600.0, 150.0), (*f - 30) as f32 / 60.0),
-        ),
-        91 => input::button(world, Button::Left, false),
-        100 => {
-            let pos = world.query::<&Square>().single(world).unwrap().pos;
-            println!("SPIKE square.pos = {pos:?}");
-            world.write_message(AppExit::Success);
-        }
-        _ => {}
-    }
 }

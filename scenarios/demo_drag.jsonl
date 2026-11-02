@@ -1,0 +1,8 @@
+# Drag the square from the window center to (600,150) and record it.
+{"cmd":"wait","frames":10}
+{"cmd":"record","every":5,"frames":0}
+{"cmd":"drag","from":[400,300],"to":[600,150],"frames":60}
+{"cmd":"wait","frames":5}
+{"cmd":"dump","components":["demo::Square"]}
+{"cmd":"screenshot","name":"final"}
+{"cmd":"quit"}

@@ -8,7 +8,8 @@
 
 use bevy::input::ButtonState;
 use bevy::input::keyboard::{Key, KeyCode, KeyboardInput, NativeKey};
-use bevy::input::mouse::MouseButtonInput;
+use bevy::ecs::message::{Message, Messages};
+use bevy::input::mouse::{MouseButtonInput, MouseMotion, MouseWheel};
 use bevy::math::DVec2;
 use bevy::prelude::*;
 use bevy::window::{CursorMoved, PrimaryWindow};
@@ -25,7 +26,7 @@ pub fn primary_window(world: &mut World) -> Option<Entity> {
 /// Sets the cursor position (logical px, top-left origin) and emits `CursorMoved`.
 pub fn set_cursor(world: &mut World, pos: Vec2) {
     let Some(window) = primary_window(world) else { return };
-    let last = write_cursor(world, window, pos);
+    let last = write_cursor(world, window, Some(pos));
     world.write_message(CursorMoved {
         window,
         position: pos,
@@ -33,25 +34,42 @@ pub fn set_cursor(world: &mut World, pos: Vec2) {
     });
 }
 
-/// Re-asserts the cursor position without emitting events (undoes real-mouse hover).
-pub fn hold_cursor(world: &mut World, pos: Vec2) {
+/// Re-asserts the virtual cursor without emitting events (undoes real-mouse hover).
+/// `None` hides the real cursor from the game (batch mode before the first injection).
+pub fn hold_cursor(world: &mut World, pos: Option<Vec2>) {
     if let Some(window) = primary_window(world) {
         write_cursor(world, window, pos);
     }
+}
+
+/// Batch mode: drop the OS's real mouse/keyboard messages so only virtual input
+/// reaches the game, wherever the user's real mouse is. Must run after
+/// `MessageUpdateSystems` and before injecting.
+pub fn drop_real_input(world: &mut World) {
+    fn clear<M: Message>(world: &mut World) {
+        if let Some(mut m) = world.get_resource_mut::<Messages<M>>() {
+            m.clear();
+        }
+    }
+    clear::<MouseButtonInput>(world);
+    clear::<MouseMotion>(world);
+    clear::<MouseWheel>(world);
+    clear::<KeyboardInput>(world);
+    clear::<CursorMoved>(world);
 }
 
 /// The OS-reported cursor, saved while a virtual one is in place.
 #[derive(Resource)]
 pub struct RealCursor(pub Option<DVec2>);
 
-fn write_cursor(world: &mut World, window: Entity, pos: Vec2) -> Option<Vec2> {
+fn write_cursor(world: &mut World, window: Entity, pos: Option<Vec2>) -> Option<Vec2> {
     let mut q = world.query::<&mut Window>();
     let Ok(mut w) = q.get_mut(world, window) else { return None };
     let last = w.cursor_position();
     let real = w.physical_cursor_position().map(|v| v.as_dvec2());
     let scale = w.resolution.scale_factor() as f64;
     w.bypass_change_detection()
-        .set_physical_cursor_position(Some(pos.as_dvec2() * scale));
+        .set_physical_cursor_position(pos.map(|p| p.as_dvec2() * scale));
     // keep the first saved value: later writes in the same frame see our own virtual cursor
     if !world.contains_resource::<RealCursor>() {
         world.insert_resource(RealCursor(real));
@@ -92,4 +110,53 @@ pub fn key(world: &mut World, key_code: KeyCode, pressed: bool) {
 
 fn state(pressed: bool) -> ButtonState {
     if pressed { ButtonState::Pressed } else { ButtonState::Released }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bevy::ecs::message::Messages;
+
+    fn world_with_window(real: Option<Vec2>) -> World {
+        let mut world = World::new();
+        world.init_resource::<Messages<CursorMoved>>();
+        world.init_resource::<Messages<MouseButtonInput>>();
+        world.init_resource::<Messages<KeyboardInput>>();
+        let mut w = Window::default();
+        w.set_cursor_position(real);
+        world.spawn((w, PrimaryWindow));
+        world
+    }
+
+    fn cursor(world: &mut World) -> Option<Vec2> {
+        world.query::<&Window>().single(world).unwrap().cursor_position()
+    }
+
+    #[test]
+    fn virtual_cursor_is_seen_then_real_one_restored() {
+        let mut world = world_with_window(Some(Vec2::new(5.0, 5.0)));
+        set_cursor(&mut world, Vec2::new(100.0, 50.0));
+        assert_eq!(cursor(&mut world), Some(Vec2::new(100.0, 50.0)));
+        set_cursor(&mut world, Vec2::new(120.0, 60.0));
+        restore_real_cursor(&mut world);
+        assert_eq!(cursor(&mut world), Some(Vec2::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn hold_none_hides_real_cursor_until_restore() {
+        let mut world = world_with_window(Some(Vec2::new(5.0, 5.0)));
+        hold_cursor(&mut world, None);
+        assert_eq!(cursor(&mut world), None);
+        restore_real_cursor(&mut world);
+        assert_eq!(cursor(&mut world), Some(Vec2::new(5.0, 5.0)));
+    }
+
+    #[test]
+    fn drop_real_input_clears_os_messages() {
+        let mut world = world_with_window(None);
+        let window = primary_window(&mut world).unwrap();
+        world.write_message(MouseButtonInput { button: MouseButton::Left, state: ButtonState::Pressed, window });
+        drop_real_input(&mut world);
+        assert!(world.resource::<Messages<MouseButtonInput>>().is_empty());
+    }
 }
