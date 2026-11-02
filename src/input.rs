@@ -7,12 +7,12 @@
 //! the real position is restored by `restore_real_cursor` before `Last`.
 
 use bevy::input::ButtonState;
-use bevy::input::keyboard::{Key, KeyCode, KeyboardInput, NativeKey};
+use bevy::input::keyboard::{Key, KeyCode, KeyboardFocusLost, KeyboardInput, NativeKey};
 use bevy::ecs::message::{Message, Messages};
 use bevy::input::mouse::{MouseButtonInput, MouseMotion, MouseWheel};
 use bevy::math::DVec2;
 use bevy::prelude::*;
-use bevy::window::{CursorMoved, PrimaryWindow};
+use bevy::window::{CursorMoved, PrimaryWindow, WindowEvent};
 
 use crate::command::Button;
 
@@ -27,11 +27,9 @@ pub fn primary_window(world: &mut World) -> Option<Entity> {
 pub fn set_cursor(world: &mut World, pos: Vec2) {
     let Some(window) = primary_window(world) else { return };
     let last = write_cursor(world, window, Some(pos));
-    world.write_message(CursorMoved {
-        window,
-        position: pos,
-        delta: last.map(|l| pos - l),
-    });
+    let ev = CursorMoved { window, position: pos, delta: last.map(|l| pos - l) };
+    world.write_message(WindowEvent::CursorMoved(ev.clone()));
+    world.write_message(ev);
 }
 
 /// Re-asserts the virtual cursor without emitting events (undoes real-mouse hover).
@@ -42,7 +40,7 @@ pub fn hold_cursor(world: &mut World, pos: Option<Vec2>) {
     }
 }
 
-/// Batch mode: drop the OS's real mouse/keyboard messages so only virtual input
+/// Batch mode: drop the OS's real mouse/keyboard messages (and their `WindowEvent` mirrors) so only virtual input
 /// reaches the game, wherever the user's real mouse is. Must run after
 /// `MessageUpdateSystems` and before injecting.
 pub fn drop_real_input(world: &mut World) {
@@ -56,6 +54,27 @@ pub fn drop_real_input(world: &mut World) {
     clear::<MouseWheel>(world);
     clear::<KeyboardInput>(world);
     clear::<CursorMoved>(world);
+    // focus loss would release_all() held virtual keys
+    clear::<KeyboardFocusLost>(world);
+    // bevy_picking reads WindowEvent, not the per-type messages above
+    if let Some(mut m) = world.get_resource_mut::<Messages<WindowEvent>>() {
+        let keep: Vec<_> = m.drain().filter(|e| !is_input(e)).collect();
+        m.write_batch(keep);
+    }
+}
+
+fn is_input(e: &WindowEvent) -> bool {
+    matches!(
+        e,
+        WindowEvent::CursorMoved(_)
+            | WindowEvent::CursorEntered(_)
+            | WindowEvent::CursorLeft(_)
+            | WindowEvent::MouseButtonInput(_)
+            | WindowEvent::MouseMotion(_)
+            | WindowEvent::MouseWheel(_)
+            | WindowEvent::KeyboardInput(_)
+            | WindowEvent::KeyboardFocusLost(_)
+    )
 }
 
 /// The OS-reported cursor, saved while a virtual one is in place.
@@ -88,24 +107,24 @@ pub fn restore_real_cursor(world: &mut World) {
 
 pub fn button(world: &mut World, b: Button, pressed: bool) {
     let Some(window) = primary_window(world) else { return };
-    world.write_message(MouseButtonInput {
-        button: b.into(),
-        state: state(pressed),
-        window,
-    });
+    let ev = MouseButtonInput { button: b.into(), state: state(pressed), window };
+    world.write_message(WindowEvent::MouseButtonInput(ev));
+    world.write_message(ev);
 }
 
 pub fn key(world: &mut World, key_code: KeyCode, pressed: bool) {
     let Some(window) = primary_window(world) else { return };
     // ponytail: logical_key/text are not synthesized; games reading ButtonInput<KeyCode> work, text input does not
-    world.write_message(KeyboardInput {
+    let ev = KeyboardInput {
         key_code,
         logical_key: Key::Unidentified(NativeKey::Unidentified),
         state: state(pressed),
         text: None,
         repeat: false,
         window,
-    });
+    };
+    world.write_message(WindowEvent::KeyboardInput(ev.clone()));
+    world.write_message(ev);
 }
 
 fn state(pressed: bool) -> ButtonState {
@@ -122,6 +141,8 @@ mod tests {
         world.init_resource::<Messages<CursorMoved>>();
         world.init_resource::<Messages<MouseButtonInput>>();
         world.init_resource::<Messages<KeyboardInput>>();
+        world.init_resource::<Messages<WindowEvent>>();
+        world.init_resource::<Messages<KeyboardFocusLost>>();
         let mut w = Window::default();
         w.set_cursor_position(real);
         world.spawn((w, PrimaryWindow));
@@ -158,5 +179,38 @@ mod tests {
         world.write_message(MouseButtonInput { button: MouseButton::Left, state: ButtonState::Pressed, window });
         drop_real_input(&mut world);
         assert!(world.resource::<Messages<MouseButtonInput>>().is_empty());
+    }
+
+    #[test]
+    fn injected_input_is_mirrored_as_window_events_for_picking() {
+        let mut world = world_with_window(None);
+        set_cursor(&mut world, Vec2::new(1.0, 2.0));
+        button(&mut world, Button::Left, true);
+        key(&mut world, KeyCode::Space, true);
+        assert_eq!(world.resource::<Messages<WindowEvent>>().len(), 3);
+    }
+
+    #[test]
+    fn drop_real_input_filters_input_window_events_but_keeps_others() {
+        let mut world = world_with_window(None);
+        let window = primary_window(&mut world).unwrap();
+        world.write_message(WindowEvent::MouseButtonInput(MouseButtonInput {
+            button: MouseButton::Left,
+            state: ButtonState::Pressed,
+            window,
+        }));
+        world.write_message(WindowEvent::RequestRedraw(bevy::window::RequestRedraw));
+        drop_real_input(&mut world);
+        let left: Vec<_> = world.resource_mut::<Messages<WindowEvent>>().drain().collect();
+        assert_eq!(left.len(), 1);
+        assert!(matches!(left[0], WindowEvent::RequestRedraw(_)));
+    }
+
+    #[test]
+    fn drop_real_input_clears_focus_lost() {
+        let mut world = world_with_window(None);
+        world.write_message(KeyboardFocusLost);
+        drop_real_input(&mut world);
+        assert!(world.resource::<Messages<KeyboardFocusLost>>().is_empty());
     }
 }

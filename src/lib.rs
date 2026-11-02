@@ -8,7 +8,7 @@ pub mod scheduler;
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bevy::ecs::message::MessageUpdateSystems;
@@ -32,16 +32,43 @@ pub struct DevState {
     pub quitting: Option<u32>,
     /// Last injected cursor, re-asserted every frame so a real mouse cannot override it.
     pub cursor: Option<Vec2>,
+    /// OS cursor seen last frame (interactive: a real move releases the virtual cursor).
+    pub last_real: Option<Vec2>,
+    /// Screenshots requested but not yet confirmed on disk.
+    pub pending_shots: Vec<(Entity, PathBuf)>,
     pub remote_seq: u32,
 }
 
 impl DevState {
+    pub fn new(scheduler: Scheduler, out: PathBuf, batch: bool, max_frames: u32) -> Self {
+        Self {
+            scheduler,
+            out,
+            batch,
+            max_frames,
+            exit_code: 0,
+            quitting: None,
+            cursor: None,
+            last_real: None,
+            pending_shots: Vec::new(),
+            remote_seq: 0,
+        }
+    }
+
     /// Appends one JSON line to `<out>/events.jsonl`.
     pub fn log(&self, v: serde_json::Value) {
         if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(self.out.join("events.jsonl")) {
             let _ = writeln!(f, "{v}");
         }
     }
+}
+
+/// Creates `frames/` and `dump/` and starts a fresh `events.jsonl` (no leftovers from earlier runs).
+pub(crate) fn init_out(out: &Path) {
+    for d in ["frames", "dump"] {
+        fs::create_dir_all(out.join(d)).expect("bcdt: cannot create output dir");
+    }
+    fs::write(out.join("events.jsonl"), "").expect("bcdt: cannot write events.jsonl");
 }
 
 impl Plugin for ConsoleDevToolsPlugin {
@@ -64,22 +91,11 @@ impl Plugin for ConsoleDevToolsPlugin {
             }
             None => Vec::new(),
         };
-        for d in ["frames", "dump"] {
-            fs::create_dir_all(out.join(d)).expect("bcdt: cannot create output dir");
-        }
+        init_out(&out);
 
         app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(1.0 / 60.0)))
             .insert_resource(WinitSettings { focused_mode: UpdateMode::Continuous, unfocused_mode: UpdateMode::Continuous })
-            .insert_resource(DevState {
-                scheduler: Scheduler::new(cmds, batch),
-                out,
-                batch,
-                max_frames,
-                exit_code: 0,
-                quitting: None,
-                cursor: None,
-                remote_seq: 0,
-            })
+            .insert_resource(DevState::new(Scheduler::new(cmds, batch), out, batch, max_frames))
             .add_systems(First, runner::run.after(MessageUpdateSystems))
             .add_systems(PostUpdate, input::restore_real_cursor);
 
@@ -87,5 +103,18 @@ impl Plugin for ConsoleDevToolsPlugin {
             // ponytail: panics if the game already adds RemotePlugin; merge methods then
             app.add_plugins((remote::plugin(), bevy::remote::http::RemoteHttpPlugin::default()));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn init_out_truncates_previous_events() {
+        let d = std::env::temp_dir().join(format!("bcdt_test_initout_{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("events.jsonl"), "{\"error\":\"old run\"}\n").unwrap();
+        super::init_out(&d);
+        assert_eq!(std::fs::read_to_string(d.join("events.jsonl")).unwrap(), "");
+        assert!(d.join("frames").is_dir() && d.join("dump").is_dir());
     }
 }

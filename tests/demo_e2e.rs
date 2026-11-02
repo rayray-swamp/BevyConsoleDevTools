@@ -40,3 +40,13 @@ fn bad_script_exits_2() {
     let status = run_demo(script.to_str().unwrap(), &dir.join("e2e_bad"));
     assert_eq!(status.code(), Some(2));
 }
+
+#[test]
+#[ignore]
+fn runtime_error_exits_1_even_when_main_discards_app_exit() {
+    let dir = Path::new(env!("CARGO_TARGET_TMPDIR"));
+    let script = dir.join("misspelled.jsonl");
+    std::fs::write(&script, "{\"cmd\":\"dump\",\"components\":[\"demo::Sqare\"]}\n").unwrap();
+    let status = run_demo(script.to_str().unwrap(), &dir.join("e2e_misspelled"));
+    assert_eq!(status.code(), Some(1));
+}

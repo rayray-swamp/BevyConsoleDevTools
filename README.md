@@ -46,7 +46,7 @@ curl -s localhost:15702 -d '{"jsonrpc":"2.0","id":1,"method":"devtools.click","p
 ```
 
 Responses are `{frame, queued, path}` (`path` = PNG for `screenshot`). BRP builtins
-(`world.query`, `world.get_resources`, …) work too. Real input keeps working here.
+(`world.query`, `world.get_resources`, …) work too. Real input keeps working here: an injected cursor holds until you move the real mouse. A `dump` of an unknown type returns a JSON-RPC error immediately.
 
 ## Commands
 
