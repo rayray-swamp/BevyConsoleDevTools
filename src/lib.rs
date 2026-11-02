@@ -2,6 +2,7 @@ pub mod capture;
 pub mod command;
 pub mod dump;
 pub mod input;
+pub mod remote;
 mod runner;
 pub mod scheduler;
 
@@ -81,5 +82,10 @@ impl Plugin for ConsoleDevToolsPlugin {
             })
             .add_systems(First, runner::run.after(MessageUpdateSystems))
             .add_systems(PostUpdate, input::restore_real_cursor);
+
+        if !batch {
+            // ponytail: panics if the game already adds RemotePlugin; merge methods then
+            app.add_plugins((remote::plugin(), bevy::remote::http::RemoteHttpPlugin::default()));
+        }
     }
 }
